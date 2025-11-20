@@ -3,10 +3,6 @@ import click
 import getpass
 from datetime import datetime
 from tqdm import tqdm
-import click
-import getpass
-from datetime import datetime
-from tqdm import tqdm
 import os
 import concurrent.futures
 import webbrowser
