@@ -444,18 +444,18 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                 except Exception:
                     pass # Handled by callback or ignored
                 
-    except KeyboardInterrupt:
-        pbar.close()
-        click.echo("\n\nCancellation requested (Ctrl+C).")
-        click.echo("Stopping background threads... please wait.")
-        shutdown_event.set()
-        scan_executor.shutdown(wait=False, cancel_futures=True)
-        download_executor.shutdown(wait=False, cancel_futures=True)
-        status = "Cancelled"
-    finally:
-        pbar.close()
-        scan_executor.shutdown(wait=False)
-        download_executor.shutdown(wait=False)
+        except KeyboardInterrupt:
+            pbar.close()
+            click.echo("\n\nCancellation requested (Ctrl+C).")
+            click.echo("Stopping background threads... please wait.")
+            shutdown_event.set()
+            scan_executor.shutdown(wait=False, cancel_futures=True)
+            download_executor.shutdown(wait=False, cancel_futures=True)
+            status = "Cancelled"
+        finally:
+            pbar.close()
+            scan_executor.shutdown(wait=False)
+            download_executor.shutdown(wait=False)
             
         # Retry Logic
         while failed_tasks and status == "Completed":
