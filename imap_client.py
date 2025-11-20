@@ -1,3 +1,4 @@
+import re
 import imaplib
 import socket
 import ssl
@@ -94,7 +95,7 @@ class AutoIMAPClient:
                 return []
             
             folders = []
-            import re
+
             # Regex to capture folder name. 
             # Matches: ... "Delimiter" "Name"  OR  ... "Delimiter" Name
             # We focus on the last part.
@@ -194,7 +195,7 @@ class AutoIMAPClient:
                 if isinstance(part, tuple):
                     header_content = part[1].decode(errors='ignore')
                     # Extract value after "Message-ID:"
-                    import re
+        
                     match = re.search(r'Message-ID:\s*(<[^>]+>|[^(\r\n)]+)', header_content, re.IGNORECASE)
                     if match:
                         return match.group(1).strip()

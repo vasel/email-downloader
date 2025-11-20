@@ -1,41 +1,4 @@
-import click
-import getpass
-from datetime import datetime
-from tqdm import tqdm
-import click
-import getpass
-from datetime import datetime
-from tqdm import tqdm
-import os
-import concurrent.futures
-import webbrowser
-import time
-import msvcrt
-import sys
-import threading
-from imap_client import AutoIMAPClient
-from utils import ensure_directory, create_zip_archive, calculate_sha1, sanitize_filename
 
-def timed_input(prompt, timeout=10, default='y'):
-    """
-    Waits for input with a timeout (Windows only using msvcrt).
-    Returns the input character or default.
-    """
-    sys.stdout.write(f"{prompt} ")
-    sys.stdout.flush()
-    
-    start_time = time.time()
-    input_char = ''
-    
-    while True:
-        if msvcrt.kbhit():
-            char = msvcrt.getwche()
-            if char == '\r' or char == '\n': # Enter pressed
-                print()
-                return default if not input_char else input_char
-            input_char += char
-            return input_char # Return immediately on first char for s/n
-            
 import click
 import getpass
 from datetime import datetime
@@ -121,7 +84,7 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 
         if content:
             # Create folder-specific subdirectory
-            folder_safe = "".join([c if c.isalnum() or c in (' ', '-', '_') else '_' for c in folder])
+            folder_safe = sanitize_filename(folder)
             folder_path = os.path.join(output_dir, folder_safe)
             ensure_directory(folder_path)
             
