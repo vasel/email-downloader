@@ -11,7 +11,7 @@ class AutoIMAPClient:
     """
     
     # Set a global timeout for all socket operations to prevent hanging threads
-    socket.setdefaulttimeout(20)
+    socket.setdefaulttimeout(10)
     
     # Common providers mapping for faster lookup
     COMMON_PROVIDERS = {

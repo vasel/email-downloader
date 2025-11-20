@@ -22,8 +22,8 @@ A robust, multi-threaded command-line tool to download emails from any IMAP serv
 
 1.  Clone this repository:
     ```bash
-    git clone https://github.com/yourusername/imap-downloader.git
-    cd imap-downloader
+    git clone https://github.com/vasel/email-downloader.git
+    cd email-downloader
     ```
 
 2.  Install the required dependencies:

@@ -36,21 +36,66 @@ def timed_input(prompt, timeout=10, default='y'):
             input_char += char
             return input_char # Return immediately on first char for s/n
             
+import click
+import getpass
+from datetime import datetime
+from tqdm import tqdm
+import click
+import getpass
+from datetime import datetime
+from tqdm import tqdm
+import os
+import concurrent.futures
+import webbrowser
+import time
+import msvcrt
+import sys
+import threading
+from imap_client import AutoIMAPClient
+from utils import ensure_directory, create_zip_archive, calculate_sha1, sanitize_filename
+
+def timed_input(prompt, timeout=10, default='y'):
+    """
+    Waits for input with a timeout (Windows only using msvcrt).
+    Returns the input character or default.
+    """
+    sys.stdout.write(f"{prompt} ")
+    sys.stdout.flush()
+    
+    start_time = time.time()
+    input_char = ''
+    
+    while True:
+        if msvcrt.kbhit():
+            char = msvcrt.getwche()
+            if char == '\r' or char == '\n': # Enter pressed
+                print()
+                return default if not input_char else input_char
+            input_char += char
+            return input_char # Return immediately on first char for s/n
+            
         if time.time() - start_time > timeout:
             print(f"\nTimeout! Defaulting to: {default}")
             return default
         
         time.sleep(0.1)
 
-def download_email_task(email, password, server_address, folder, email_id, output_dir, seen_ids=None, seen_lock=None):
+def download_email_task(email, password, server_address, folder, email_id, output_dir, seen_ids=None, seen_lock=None, shutdown_event=None):
     """
     Worker function to download a single email.
     Returns (success, error_message).
     """
     try:
+        if shutdown_event and shutdown_event.is_set():
+            return False, "Shutdown initiated"
+
         client = AutoIMAPClient(email, password)
         if not client.connect(server_hostname=server_address, verbose=False):
             return False, "Connection failed"
+
+        if shutdown_event and shutdown_event.is_set():
+            client.close()
+            return False, "Shutdown initiated"
 
         if not client.select_folder(folder):
             client.close()
@@ -63,9 +108,13 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
                 with seen_lock:
                     if msg_id in seen_ids:
                         client.close()
-                        return True, None # Treated as success (skipped)
+                        return True, "SKIPPED" # Treated as success but skipped
                     seen_ids.add(msg_id)
             # If no msg_id found, we proceed to download anyway to be safe
+
+        if shutdown_event and shutdown_event.is_set():
+            client.close()
+            return False, "Shutdown initiated"
 
         content = client.fetch_email_content(email_id)
         client.close()
@@ -185,8 +234,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
         seen_ids = set()
         seen_lock = threading.Lock()
         count_lock = threading.Lock()
+        shutdown_event = threading.Event()
         
         downloaded_count = 0
+        skipped_count = 0
         failed_tasks = [] # List of (folder, email_id)
         status = "Completed"
         
@@ -207,10 +258,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
             elapsed = time.time() - start_time
             if elapsed > 0:
                 speed_h = (downloaded_count / elapsed) * 3600
-                pbar.set_postfix_str(f"{speed_h:.0f} emails/h | Errors: {len(failed_tasks)}")
+                pbar.set_postfix_str(f"{speed_h:.0f} emails/h | Skipped: {skipped_count} | Errors: {len(failed_tasks)}")
 
         def download_done_callback(future):
-            nonlocal downloaded_count
+            nonlocal downloaded_count, skipped_count
             # Check if already handled (e.g. by timeout logic)
             if getattr(future, 'handled', False):
                 return
@@ -224,7 +275,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                     future.handled = True
                     
                     if success:
-                        downloaded_count += 1
+                        if error_msg == "SKIPPED":
+                            skipped_count += 1
+                        else:
+                            downloaded_count += 1
                     else:
                         failed_tasks.append((folder, eid))
                     
@@ -263,19 +317,27 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
         ensure_directory(final_subfolder_path)
 
         # Wrapper to track failures since callback doesn't have context easily
-        def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock):
-            res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock)
+        def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock, s_event):
+            if s_event.is_set():
+                return False, "Shutdown initiated", f, eid
+            res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock, s_event)
             if not res[0]:
                 return False, res[1], f, eid
-            return True, None, f, eid
+            return True, res[1], f, eid
 
         def submit_download(folder, eid):
-            # Use final_subfolder_path directly
-            f = download_executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock)
-            f.task_info = (folder, eid) # Attach info for timeout handling
-            f.add_done_callback(download_done_callback)
-            download_futures.append(f)
-            return f
+            if shutdown_event.is_set():
+                return None
+            try:
+                # Use final_subfolder_path directly
+                f = download_executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event)
+                f.task_info = (folder, eid) # Attach info for timeout handling
+                f.add_done_callback(download_done_callback)
+                download_futures.append(f)
+                return f
+            except RuntimeError:
+                # Executor likely shutdown
+                return None
 
         try:
             # 1. Scan & Download Inbox IMMEDIATELY
@@ -290,27 +352,52 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                         pbar.total += count
                         pbar.refresh()
                         for eid in ids:
+                            if shutdown_event.is_set(): break
                             submit_download(inbox_folder, eid)
             
             # 2. Background Scan for others
             def background_scan():
+                # Use a separate client for scanning to avoid conflict
+                scan_client = AutoIMAPClient(email, password)
+                if not scan_client.connect(server_hostname=server_address, verbose=False):
+                    tqdm.write("Error: Background scanner could not connect.")
+                    return
+
                 for folder in other_folders:
+                    if shutdown_event.is_set(): break
                     try:
-                        c = AutoIMAPClient(email, password)
-                        if not c.connect(server_hostname=server_address, verbose=False):
+                        # Update status to show what we are scanning
+                        # We can't easily update pbar description from here without lock, 
+                        # so we use tqdm.write for log and maybe a shared status string
+                        tqdm.write(f"Scanning folder: {folder}...")
+                        
+                        # Select folder
+                        if not scan_client.select_folder(folder):
+                            tqdm.write(f"Skipping {folder}: Could not select.")
                             continue
-                        ids = c.fetch_email_ids(folder, s_date, e_date)
-                        c.close()
+                            
+                        ids = scan_client.fetch_email_ids(folder, s_date, e_date)
+                        
                         if ids:
                             count = len(ids)
+                            tqdm.write(f"-> Found {count} emails in {folder}")
+                            
                             # Update total safely
                             with count_lock:
                                 pbar.total += count
                                 pbar.refresh()
+                                
                             for eid in ids:
+                                if shutdown_event.is_set(): break
                                 submit_download(folder, eid)
-                    except:
-                        pass
+                        else:
+                             tqdm.write(f"-> No emails in {folder}")
+                             
+                    except Exception as e:
+                        tqdm.write(f"Error scanning {folder}: {e}")
+                
+                scan_client.close()
+                tqdm.write("Background scan completed.")
             
             scan_future = scan_executor.submit(background_scan)
             
@@ -339,7 +426,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                         with count_lock:
                             pbar.refresh()
                             # Print explicit status line below pbar
-                            tqdm.write(f"\n[Status Update] Downloaded: {downloaded_count}/{pbar.total} | Failed: {len(failed_tasks)}")
+                            tqdm.write(f"\n[Status Update] Downloaded: {downloaded_count} | Skipped: {skipped_count} | Remaining: {pbar.total - (downloaded_count + skipped_count + len(failed_tasks))}")
                 
                 # Periodic Update (every 0.5s)
                 current_time = time.time()
@@ -357,18 +444,18 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                 except Exception:
                     pass # Handled by callback or ignored
                 
-        except KeyboardInterrupt:
-            click.echo("\n\nCancellation requested (Ctrl+C).")
-            scan_executor.shutdown(wait=False, cancel_futures=True)
-            download_executor.shutdown(wait=False, cancel_futures=True)
-            if click.confirm("Do you really want to stop?", default=True):
-                status = "Cancelled"
-            else:
-                status = "Cancelled (Aborted)"
-        finally:
-            pbar.close()
-            scan_executor.shutdown(wait=False)
-            download_executor.shutdown(wait=False)
+    except KeyboardInterrupt:
+        pbar.close()
+        click.echo("\n\nCancellation requested (Ctrl+C).")
+        click.echo("Stopping background threads... please wait.")
+        shutdown_event.set()
+        scan_executor.shutdown(wait=False, cancel_futures=True)
+        download_executor.shutdown(wait=False, cancel_futures=True)
+        status = "Cancelled"
+    finally:
+        pbar.close()
+        scan_executor.shutdown(wait=False)
+        download_executor.shutdown(wait=False)
             
         # Retry Logic
         while failed_tasks and status == "Completed":
@@ -399,7 +486,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                     with tqdm(total=len(failed_tasks), unit=' emails') as pbar_retry:
                         for folder, eid in failed_tasks:
                             # Use final_subfolder_path here as well
-                            f = executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock)
+                            f = executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event)
                             f.task_info = (folder, eid)
                             f.add_done_callback(retry_done_callback)
                             retry_futures.append(f)
@@ -425,9 +512,15 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
         duration_hours = duration_seconds / 3600.0
         emails_per_hour = downloaded_count / duration_hours if duration_hours > 0 else 0
         
+        total_items = pbar.total if pbar.total else 0
+        processed_count = downloaded_count + skipped_count + len(failed_tasks)
+        remaining_count = max(0, total_items - processed_count)
+
         click.echo(f"\nDownload finished. Status: {status}")
-        click.echo(f"Downloaded: {downloaded_count}/{pbar.total if pbar.total else 0}")
+        click.echo(f"Downloaded: {downloaded_count}")
+        click.echo(f"Skipped (Duplicates): {skipped_count}")
         click.echo(f"Final Errors: {len(failed_tasks)}")
+        click.echo(f"Remaining (Cancelled): {remaining_count}")
         click.echo(f"Average Speed: {emails_per_hour:.2f} emails/hour")
         click.echo(f"Emails saved in: {os.path.abspath(output_dir)}")
         
@@ -458,9 +551,11 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                 f.write(f"SHA1: {sha1_hash}\n")
                 f.write(f"Date: {datetime.now().isoformat()}\n")
                 f.write(f"Status: {status}\n")
-                f.write(f"Total Emails: {pbar.total if pbar.total else 0}\n")
+                f.write(f"Total Emails: {total_items}\n")
                 f.write(f"Downloaded: {downloaded_count}\n")
+                f.write(f"Skipped: {skipped_count}\n")
                 f.write(f"Failed: {len(failed_tasks)}\n")
+                f.write(f"Remaining: {remaining_count}\n")
                 f.write(f"Speed: {emails_per_hour:.2f} emails/hour\n")
             
             click.echo(f"Integrity info saved in {checksum_file}")
