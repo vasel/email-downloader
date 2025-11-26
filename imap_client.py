@@ -4,6 +4,8 @@ import socket
 import ssl
 from datetime import datetime
 from typing import Optional, Tuple, List
+import urllib.request
+import xml.etree.ElementTree as ET
 
 class AutoIMAPClient:
     """
@@ -37,6 +39,27 @@ class AutoIMAPClient:
         self.connection: Optional[imaplib.IMAP4_SSL] = None
         self.server_address: Optional[str] = None
 
+    def _lookup_thunderbird_config(self) -> Optional[str]:
+        """
+        Queries Thunderbird's autoconfig service for the domain.
+        Returns the hostname if found, otherwise None.
+        """
+        try:
+            url = f"https://autoconfig.thunderbird.net/v1.1/{self.domain}"
+            with urllib.request.urlopen(url, timeout=5) as response:
+                if response.status == 200:
+                    tree = ET.parse(response)
+                    root = tree.getroot()
+                    # Look for <incomingServer type="imap">
+                    for server in root.findall(".//incomingServer"):
+                        if server.get('type') == 'imap':
+                            hostname = server.find('hostname')
+                            if hostname is not None:
+                                return hostname.text
+        except Exception:
+            pass
+        return None
+
     def _guess_server(self) -> List[str]:
         """Generates a list of potential IMAP servers to try."""
         candidates = []
@@ -48,6 +71,11 @@ class AutoIMAPClient:
         # 2. Standard prefixes
         candidates.append(f"imap.{self.domain}")
         candidates.append(f"mail.{self.domain}")
+        
+        # 3. Thunderbird Autoconfig
+        tb_config = self._lookup_thunderbird_config()
+        if tb_config and tb_config not in candidates:
+            candidates.append(tb_config)
         
         return candidates
 
@@ -115,6 +143,10 @@ class AutoIMAPClient:
                         # Filter Spam/Junk but allow Trash
                         lower_name = name.lower()
                         if ('spam' in lower_name or 'junk' in lower_name or 'bulk' in lower_name) and 'trash' not in lower_name:
+                            continue
+                        
+                        # Exclude [Gmail]/Todos os e-mails and All Mail to avoid duplication
+                        if 'todos os e-mails' in lower_name or 'all mail' in lower_name:
                             continue
                             
                         folders.append(name)

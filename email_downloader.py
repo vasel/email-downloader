@@ -200,6 +200,14 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
         failed_tasks = [] # List of (folder, email_id)
         status = "Completed"
         
+        # Folder stats tracking: {folder_name: {'downloaded': 0, 'skipped': 0, 'failed': 0}}
+        folder_stats = {}
+        folder_stats_lock = threading.Lock()
+
+        # Active threads tracking
+        active_threads = 0
+        active_threads_lock = threading.Lock()
+        
         # Executors
         # Scan executor: 1 thread for background scan
         scan_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
@@ -217,7 +225,9 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
             elapsed = time.time() - start_time
             if elapsed > 0:
                 speed_h = (downloaded_count / elapsed) * 3600
-                pbar.set_postfix_str(f"{speed_h:.0f} emails/h | Skipped: {skipped_count} | Errors: {len(failed_tasks)}")
+                with active_threads_lock:
+                    current_threads = active_threads
+                pbar.set_postfix_str(f"{speed_h:.0f} emails/h | Active: {current_threads} | Skipped: {skipped_count} | Errors: {len(failed_tasks)}")
 
         def download_done_callback(future):
             nonlocal downloaded_count, skipped_count
@@ -236,10 +246,19 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                     if success:
                         if error_msg == "SKIPPED":
                             skipped_count += 1
+                            with folder_stats_lock:
+                                if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
+                                folder_stats[folder]['skipped'] += 1
                         else:
                             downloaded_count += 1
+                            with folder_stats_lock:
+                                if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
+                                folder_stats[folder]['downloaded'] += 1
                     else:
                         failed_tasks.append((folder, eid))
+                        with folder_stats_lock:
+                            if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
+                            folder_stats[folder]['failed'] += 1
                     
                     pbar.update(1)
                     # REMOVED: update_speed() call to reduce I/O contention
@@ -248,6 +267,9 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                     if getattr(future, 'handled', False): return
                     future.handled = True
                     failed_tasks.append((folder, eid))
+                    with folder_stats_lock:
+                        if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
+                        folder_stats[folder]['failed'] += 1
                     pbar.update(1)
 
         # Generate dynamic filename base upfront
@@ -277,12 +299,19 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
 
         # Wrapper to track failures since callback doesn't have context easily
         def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock, s_event):
-            if s_event.is_set():
-                return False, "Shutdown initiated", f, eid
-            res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock, s_event)
-            if not res[0]:
-                return False, res[1], f, eid
-            return True, res[1], f, eid
+            nonlocal active_threads
+            with active_threads_lock:
+                active_threads += 1
+            try:
+                if s_event.is_set():
+                    return False, "Shutdown initiated", f, eid
+                res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock, s_event)
+                if not res[0]:
+                    return False, res[1], f, eid
+                return True, res[1], f, eid
+            finally:
+                with active_threads_lock:
+                    active_threads -= 1
 
         def submit_download(folder, eid):
             if shutdown_event.is_set():
@@ -516,6 +545,9 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                 f.write(f"Failed: {len(failed_tasks)}\n")
                 f.write(f"Remaining: {remaining_count}\n")
                 f.write(f"Speed: {emails_per_hour:.2f} emails/hour\n")
+                f.write("\n--- Folder Statistics ---\n")
+                for folder, stats in folder_stats.items():
+                    f.write(f"Folder: {folder} - Downloaded: {stats['downloaded']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}\n")
             
             click.echo(f"Integrity info saved in {checksum_file}")
 

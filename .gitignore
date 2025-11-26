@@ -7,3 +7,4 @@ temp_processing/
 .vscode/
 .idea/
 *.eml
+build/*
