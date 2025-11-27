@@ -1,6 +1,6 @@
 # Benchmark Results - 2025-11-27T01:41:02.077995
 
-**Email**: rafael.vasel@gmail.com
+**Email**: @gmail.com
 **Days**: 5
 
 | Threads | Duration (s) | Speed (emails/h) | Downloaded | Skipped | Errors |
