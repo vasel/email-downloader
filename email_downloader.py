@@ -104,7 +104,9 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 @click.option('--days', help='Download emails from the last X days', type=int, default=None)
 @click.option('--output-dir', default='downloaded_emails', help='Directory to save emails')
 @click.option('--threads', default=10, help='Number of threads for downloading')
-def main(email, password, start_date, end_date, days, output_dir, threads):
+@click.option('--max-retries', default=0, help='Number of auto-retries for failed downloads', type=int)
+@click.option('--batch', is_flag=True, help='Run in batch mode (no interactive prompts, defaults to No for optional steps)')
+def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch):
     """
     Downloads emails from an IMAP server with auto-discovery and multi-threading.
     """
@@ -446,15 +448,44 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
             download_executor.shutdown(wait=False)
             
         # Retry Logic
+        # Retry Logic
+        retry_attempt = 0
+        
         while failed_tasks and status == "Completed":
             click.echo(f"\n{len(failed_tasks)} emails failed.")
-            choice = timed_input(f"Do you want to retry downloading the {len(failed_tasks)} errors? (y/n) [10s]:", timeout=10, default='y')
             
-            if choice.lower() == 'y':
-                click.echo("Retrying failures...")
+            # Determine if we should auto-retry or ask user
+            should_retry = False
+            timeout_val = 60 # Base timeout
+            
+            if retry_attempt < max_retries:
+                click.echo(f"Auto-retry attempt {retry_attempt + 1}/{max_retries}...")
+                should_retry = True
+                # Exponential backoff for timeout (60, 120, 180...)
+                timeout_val = 60 * (retry_attempt + 1)
+                retry_attempt += 1
+            else:
+                # Manual intervention
+                if batch:
+                    choice = 'n'
+                else:
+                    # If we exhausted auto-retries, default is 'n', else 'y'
+                    default_choice = 'n' if max_retries > 0 else 'y'
+                    choice = timed_input(f"Do you want to retry downloading the {len(failed_tasks)} errors? (y/n) [10s]:", timeout=10, default=default_choice)
+                
+                if choice.lower() == 'y':
+                    should_retry = True
+                    # Reset attempt count if user manually says yes, to allow further manual retries? 
+                    # Or just keep increasing timeout? Let's keep increasing timeout but cap it maybe?
+                    # For simplicity, let's just use base timeout or current level.
+                    timeout_val = 60 * (retry_attempt + 1)
+                else:
+                    should_retry = False
+
+            if should_retry:
+                click.echo(f"Retrying failures with timeout {timeout_val}s...")
                 # Retry batch
                 new_failed = []
-                # Reset pbar for retry
                 
                 # We need a new list of futures for retry
                 retry_futures = []
@@ -482,7 +513,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                         # Wait for retries
                         for f in retry_futures:
                             try:
-                                f.result(timeout=60)
+                                f.result(timeout=timeout_val)
                             except:
                                 pass
                             
@@ -492,6 +523,9 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
                 
                 # Update total downloaded count
                 downloaded_count += recovered
+                
+                # If manual retry was triggered and we are here, loop continues.
+                # If auto-retry was triggered, loop continues.
             else:
                 break
 
@@ -514,7 +548,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads):
         
         # Zip and Hash section with Timeout
         click.echo("\n")
-        user_choice = timed_input("Do you want to create a ZIP archive of the downloaded emails? (y/n) [10s]:", timeout=10, default='y')
+        if batch:
+            user_choice = 'n'
+        else:
+            user_choice = timed_input("Do you want to create a ZIP archive of the downloaded emails? (y/n) [10s]:", timeout=10, default='y')
         
         if user_choice.lower() == 'y':
             zip_filename = f"{base_name}.zip"
