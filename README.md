@@ -73,6 +73,36 @@ output_dir/
 └── user_domain_Start_End.txt       # Checksum file containing SHA1 hash and stats
 ```
 
+## Executables
+
+To facilitate usage without installing Python, compiled versions are available:
+
+*   **[Windows 10/11 (Standard)](dist/email_downloader.exe)**: Recommended version for modern systems.
+*   **[Windows 7 (Legacy)](dist/email_downloader_win7.exe)**: Compatible with Windows 7 (Requires `api-ms-win-core-path-l1-1-0.dll` in the same folder if not present on the system).
+
+## Benchmark & Performance
+
+The project includes a dedicated tool to test download performance and find the optimal number of threads for your connection and IMAP server.
+
+### Usage
+
+Run the `benchmark.py` script:
+
+```bash
+python benchmark.py --email your_email@gmail.com --days 3
+```
+
+The script will:
+1.  Automatically test different thread counts (1, 2, 3, 5, 7, 10, 15, 20).
+2.  Generate a detailed report in `benchmark_results.md`.
+3.  Create a detailed execution log in `benchmark_detailed.log` for error diagnosis (e.g., "Too many connections").
+
+### Benchmark Options
+
+*   `--days`: Number of days to download (default: 3).
+*   `--start-date` / `--end-date`: Specific date range.
+*   `--output-dir`: Directory to save results (default: `benchmark_results`).
+
 ## License
 
 MIT License

@@ -7,4 +7,8 @@ temp_processing/
 .vscode/
 .idea/
 *.eml
-build/*
+build/
+benchmark_results.md
+benchmark_detailed.log
+benchmark_results/
+
