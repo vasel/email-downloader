@@ -4,7 +4,7 @@
 a = Analysis(
     ['email_downloader.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('./dist/api-ms-win-core-path-l1-1-0.dll', '.')],
     datas=[],
     hiddenimports=[],
     hookspath=[],
