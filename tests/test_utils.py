@@ -2,6 +2,8 @@ import unittest
 import os
 import shutil
 import tempfile
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from utils import sanitize_filename, ensure_directory, calculate_sha1, create_zip_archive
 
 class TestUtils(unittest.TestCase):
