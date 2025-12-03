@@ -39,7 +39,7 @@ def timed_input(prompt, timeout=10, default='y'):
         
         time.sleep(0.1)
 
-def download_email_task(email, password, server_address, folder, email_id, output_dir, seen_ids=None, seen_lock=None, shutdown_event=None):
+def download_email_task(email, password, server_address, folder, email_id, output_dir, seen_ids=None, seen_lock=None, shutdown_event=None, port=993):
     """
     Worker function to download a single email.
     Returns (success, error_message).
@@ -49,7 +49,7 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
             return False, "Shutdown initiated"
 
         client = AutoIMAPClient(email, password)
-        if not client.connect(server_hostname=server_address, verbose=False):
+        if not client.connect(server_hostname=server_address, port=port, verbose=False):
             return False, "Connection failed"
 
         if shutdown_event and shutdown_event.is_set():
@@ -106,7 +106,9 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 @click.option('--threads', default=10, help='Number of threads for downloading')
 @click.option('--max-retries', default=0, help='Number of auto-retries for failed downloads', type=int)
 @click.option('--batch', is_flag=True, help='Run in batch mode (no interactive prompts, defaults to No for optional steps)')
-def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch):
+@click.option('--server', help='IMAP server hostname (e.g. imap.gmail.com)')
+@click.option('--port', default=993, help='IMAP server port', type=int)
+def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port):
     """
     Downloads emails from an IMAP server with auto-discovery and multi-threading.
     """
@@ -140,28 +142,29 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
     client = AutoIMAPClient(email, password)
     
     click.echo(f"Connecting to {email}...")
-    if not client.connect(verbose=True):
+    
+    # Connection Loop with Password Retry
+    while True:
+        if client.connect(server_hostname=server, port=port, verbose=True):
+            break
+        
         click.echo("Error: Could not connect or auto-discover IMAP server.")
         
-        # UX Improvement: Gmail App Password
+        # UX Improvement: Gmail App Password (only show once or if relevant)
         if 'gmail.com' in email.lower() or 'googlemail.com' in email.lower():
             click.echo("\n" + "="*60)
             click.echo("GMAIL ALERT: Authentication failed.")
             click.echo("To use this software with Gmail, you MUST use an 'App Password'.")
+            click.echo("Visit: https://myaccount.google.com/apppasswords")
             click.echo("Your normal Google password will NOT work.")
-            click.echo("Opening instructions in browser...")
             click.echo("="*60 + "\n")
-            try:
-                webbrowser.open('https://myaccount.google.com/apppasswords')
-            except:
-                click.echo("Visit: https://myaccount.google.com/apppasswords")
-        
-        # Fallback Manual Input
-        server_input = input("Do you want to enter the server manually? (Type address or Enter to exit): ").strip()
-        if server_input:
-            if not client.connect(server_hostname=server_input, verbose=True):
-                click.echo("Failed to connect to the provided server.")
-                return
+
+        # Fallback: Ask for new password
+        new_password = getpass.getpass("Authentication failed or server not found. Enter new password to retry (or press Enter to exit): ")
+        if new_password:
+            client.password = new_password
+            password = new_password # Update local var too if needed elsewhere
+            # Retry loop
         else:
             return
     
@@ -300,14 +303,14 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         ensure_directory(final_subfolder_path)
 
         # Wrapper to track failures since callback doesn't have context easily
-        def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock, s_event):
+        def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock, s_event, port):
             nonlocal active_threads
             with active_threads_lock:
                 active_threads += 1
             try:
                 if s_event.is_set():
                     return False, "Shutdown initiated", f, eid
-                res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock, s_event)
+                res = download_email_task(em, pw, srv, f, eid, out, s_ids, s_lock, s_event, port)
                 if not res[0]:
                     return False, res[1], f, eid
                 return True, res[1], f, eid
@@ -320,7 +323,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                 return None
             try:
                 # Use final_subfolder_path directly
-                f = download_executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event)
+                f = download_executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event, port)
                 f.task_info = (folder, eid) # Attach info for timeout handling
                 f.add_done_callback(download_done_callback)
                 download_futures.append(f)
@@ -334,7 +337,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             if inbox_folder:
                 click.echo(f"Scanning {inbox_folder}...")
                 c = AutoIMAPClient(email, password)
-                if c.connect(server_hostname=server_address, verbose=False):
+                if c.connect(server_hostname=server_address, port=port, verbose=False):
                     ids = c.fetch_email_ids(inbox_folder, s_date, e_date)
                     c.close()
                     count = len(ids)
@@ -349,7 +352,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             def background_scan():
                 # Use a separate client for scanning to avoid conflict
                 scan_client = AutoIMAPClient(email, password)
-                if not scan_client.connect(server_hostname=server_address, verbose=False):
+                if not scan_client.connect(server_hostname=server_address, port=port, verbose=False):
                     tqdm.write("Error: Background scanner could not connect.")
                     return
 
@@ -381,7 +384,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                                 if shutdown_event.is_set(): break
                                 submit_download(folder, eid)
                         else:
-                             tqdm.write(f"-> No emails in {folder}")
+                            tqdm.write(f"-> No emails in {folder}")
                              
                     except Exception as e:
                         tqdm.write(f"Error scanning {folder}: {e}")
@@ -505,7 +508,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                     with tqdm(total=len(failed_tasks), unit=' emails') as pbar_retry:
                         for folder, eid in failed_tasks:
                             # Use final_subfolder_path here as well
-                            f = executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event)
+                            f = executor.submit(download_wrapper, email, password, server_address, folder, eid, final_subfolder_path, seen_ids, seen_lock, shutdown_event, port)
                             f.task_info = (folder, eid)
                             f.add_done_callback(retry_done_callback)
                             retry_futures.append(f)
