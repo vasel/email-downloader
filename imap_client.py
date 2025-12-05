@@ -80,7 +80,7 @@ class AutoIMAPClient:
         
         return candidates
 
-    def connect(self, server_hostname: Optional[str] = None, port: int = 993, verbose: bool = True) -> bool:
+    def connect(self, server_hostname: Optional[str] = None, port: int = 993, verbose: bool = True, use_ssl: bool = True) -> bool:
         """
         Attempts to connect to the IMAP server.
         If server_hostname is provided, connects directly to it.
@@ -97,9 +97,13 @@ class AutoIMAPClient:
         for server in potential_servers:
             try:
                 if verbose:
-                    print(f"Attempting to connect to {server}:{port}...")
-                # Try SSL first (port 993 usually, but user might override)
-                self.connection = imaplib.IMAP4_SSL(server, port, timeout=10)
+                    print(f"Attempting to connect to {server}:{port} ({'SSL' if use_ssl else 'No-SSL'})...")
+                
+                if use_ssl:
+                    self.connection = imaplib.IMAP4_SSL(server, port, timeout=10)
+                else:
+                    self.connection = imaplib.IMAP4(server, port, timeout=10)
+                    
                 self.connection.login(self.email_address, self.password)
                 self.server_address = server
                 if verbose:
