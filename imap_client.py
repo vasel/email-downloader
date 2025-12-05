@@ -38,6 +38,7 @@ class AutoIMAPClient:
         self.domain = email_address.split('@')[1].lower()
         self.connection: Optional[imaplib.IMAP4_SSL] = None
         self.server_address: Optional[str] = None
+        self.connection_attempts: List[Tuple[str, str]] = [] # List of (server, error)
 
     def _lookup_thunderbird_config(self) -> Optional[str]:
         """
@@ -91,6 +92,8 @@ class AutoIMAPClient:
         else:
             potential_servers = self._guess_server()
         
+        self.connection_attempts = [] # Reset attempts on new connect call
+        
         for server in potential_servers:
             try:
                 if verbose:
@@ -103,6 +106,8 @@ class AutoIMAPClient:
                     print(f"Successfully connected to {server}!")
                 return True
             except (imaplib.IMAP4.error, socket.gaierror, socket.timeout, ssl.SSLError) as e:
+                error_msg = str(e)
+                self.connection_attempts.append((server, error_msg))
                 if verbose:
                     print(f"Failed to connect to {server}:{port}: {e}")
                 continue

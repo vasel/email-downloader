@@ -626,6 +626,11 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                 f.write(f"Failed: {len(failed_tasks)}\n")
                 f.write(f"Remaining: {remaining_count}\n")
                 f.write(f"Speed: {emails_per_hour:.2f} emails/hour\n")
+                f.write(f"Server Connected: {server_address}\n")
+                if hasattr(client, 'connection_attempts') and client.connection_attempts:
+                    f.write("Failed Connection Attempts:\n")
+                    for srv, err in client.connection_attempts:
+                        f.write(f"  - {srv}: {err}\n")
                 f.write("\n--- Folder Statistics ---\n")
                 for folder, stats in folder_stats.items():
                     f.write(f"Folder: {folder} - Downloaded: {stats['downloaded']}, Skipped: {stats['skipped']}, Failed: {stats['failed']}\n")
