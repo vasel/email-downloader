@@ -33,11 +33,37 @@ def timed_input(prompt, timeout=10, default='y'):
             input_char += char
             return input_char # Return immediately on first char for s/n
             
-        if time.time() - start_time > timeout:
-            print(f"\nTimeout! Defaulting to: {default}")
-            return default
-        
-        time.sleep(0.1)
+# Thread-local storage for IMAP connections
+thread_local = threading.local()
+
+def get_thread_client(email, password, server_address, port):
+    """
+    Returns a thread-local AutoIMAPClient, connecting if necessary.
+    """
+    if not hasattr(thread_local, 'client'):
+        thread_local.client = AutoIMAPClient(email, password)
+        thread_local.client.connection = None # Ensure clean state
+    
+    client = thread_local.client
+    
+    # Check if connected
+    if not client.connection:
+        if not client.connect(server_hostname=server_address, port=port, verbose=False):
+            return None
+    else:
+        # Verify connection is still alive (noop)
+        try:
+            client.connection.noop()
+        except Exception:
+            # Reconnect
+            try:
+                client.close()
+            except:
+                pass
+            if not client.connect(server_hostname=server_address, port=port, verbose=False):
+                return None
+                
+    return client
 
 def download_email_task(email, password, server_address, folder, email_id, output_dir, seen_ids=None, seen_lock=None, shutdown_event=None, port=993):
     """
@@ -48,17 +74,26 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
         if shutdown_event and shutdown_event.is_set():
             return False, "Shutdown initiated"
 
-        client = AutoIMAPClient(email, password)
-        if not client.connect(server_hostname=server_address, port=port, verbose=False):
+        # Use thread-local client
+        client = get_thread_client(email, password, server_address, port)
+        if not client:
             return False, "Connection failed"
 
         if shutdown_event and shutdown_event.is_set():
-            client.close()
+            # Do not close the shared connection here, just return
             return False, "Shutdown initiated"
 
         if not client.select_folder(folder):
-            client.close()
-            return False, f"Failed to select folder {folder}"
+            # Try reconnecting once if selection fails (maybe folder closed or connection dropped)
+            try:
+                client.close()
+            except:
+                pass
+            if client.connect(server_hostname=server_address, port=port, verbose=False):
+                 if not client.select_folder(folder):
+                     return False, f"Failed to select folder {folder}"
+            else:
+                return False, "Connection lost during folder selection"
 
         # Deduplication Logic
         if seen_ids is not None and seen_lock is not None:
@@ -66,18 +101,17 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
             if msg_id:
                 with seen_lock:
                     if msg_id in seen_ids:
-                        client.close()
+                        # Do not close client
                         return True, "SKIPPED" # Treated as success but skipped
                     seen_ids.add(msg_id)
             # If no msg_id found, we proceed to download anyway to be safe
-
+            
         if shutdown_event and shutdown_event.is_set():
-            client.close()
             return False, "Shutdown initiated"
 
         content = client.fetch_email_content(email_id)
-        client.close()
-
+        # Do not close client
+        
         if content:
             # Create folder-specific subdirectory
             folder_safe = sanitize_filename(folder)
@@ -94,6 +128,13 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
         else:
             return False, f"Empty content (UID: {email_id.decode()})"
     except Exception as e:
+        # In case of error, we might want to invalidate the connection for next time
+        if hasattr(thread_local, 'client'):
+             try:
+                 thread_local.client.close()
+             except:
+                 pass
+             thread_local.client.connection = None
         return False, str(e)
 
 @click.command()
