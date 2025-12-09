@@ -31,6 +31,8 @@ A robust, multi-threaded command-line tool to download emails from any IMAP serv
     pip install click tqdm
     ```
 
+Alternatively, you can skip the installation and use the standalone executable located in the `dist` folder.
+
 ## Usage
 
 Run the script using Python:
@@ -49,6 +51,11 @@ python email_downloader.py --email your_email@gmail.com --output-dir ./downloads
 *   `--start-date`: Start date in `YYYY-MM-DD` format.
 *   `--end-date`: End date in `YYYY-MM-DD` format.
 *   `--threads`: Number of download threads (default: 10).
+*   `--max-retries`: Number of auto-retries for failed downloads (default: 0).
+*   `--batch`: Run in batch mode (no interactive prompts).
+*   `--server`: IMAP server hostname (e.g., imap.gmail.com).
+*   `--port`: IMAP server port (default: 993).
+*   `--nossl`: Disable SSL (use for servers that do not support SSL).
 
 ### Examples
 
@@ -75,10 +82,9 @@ output_dir/
 
 ## Executables
 
-To facilitate usage without installing Python, compiled versions are available:
+To facilitate usage without installing Python, a compiled version is available:
 
-*   **[Windows 10/11 (Standard)](dist/email_downloader.exe)**: Recommended version for modern systems.
-*   **[Windows 7 (Legacy)](dist/email_downloader_win7.exe)**: Compatible with Windows 7 (Requires `api-ms-win-core-path-l1-1-0.dll` in the same folder if not present on the system).
+*   **[Windows (All Versions)](dist/email_downloader.exe)**: Compatible with Windows 7, 10, and 11.
 
 ## Benchmark & Performance
 
