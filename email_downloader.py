@@ -114,7 +114,15 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
         
         if content:
             # Create folder-specific subdirectory
-            folder_safe = sanitize_filename(folder)
+            # Remove INBOX. or INBOX/ prefix for cleaner folder names
+            # But keep "INBOX" as is.
+            display_folder = folder
+            upper_folder = display_folder.upper()
+            
+            if upper_folder.startswith("INBOX.") or upper_folder.startswith("INBOX/"):
+                display_folder = display_folder[6:]
+            
+            folder_safe = sanitize_filename(display_folder)
             folder_path = os.path.join(output_dir, folder_safe)
             ensure_directory(folder_path)
             
