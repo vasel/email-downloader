@@ -47,7 +47,7 @@ def create_zip_archive(source_dir: str, output_filename: str, compression_method
             return arc_name, None, e
 
     # 3. Use ThreadPoolExecutor to read files in parallel
-    max_workers = min(32, os.cpu_count() * 4) 
+    max_workers = os.cpu_count() 
     
     # Re-implementing with as_completed to avoid memory spike and allow streaming write
     # Setup compression args
