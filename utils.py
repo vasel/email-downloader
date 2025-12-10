@@ -21,7 +21,7 @@ def ensure_directory(path: str):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def create_zip_archive(source_dir: str, output_filename: str):
+def create_zip_archive(source_dir: str, output_filename: str, compression_method=zipfile.ZIP_STORED, compress_level=None):
     """
     Zips the contents of source_dir into output_filename using multi-threading for reading
     and a progress bar.
@@ -47,12 +47,16 @@ def create_zip_archive(source_dir: str, output_filename: str):
             return arc_name, None, e
 
     # 3. Use ThreadPoolExecutor to read files in parallel
-    # We use a limited number of workers to avoid consuming too much memory if files are large,
-    # though usually emails are small.
     max_workers = min(32, os.cpu_count() * 4) 
     
     # Re-implementing with as_completed to avoid memory spike and allow streaming write
-    with zipfile.ZipFile(output_filename, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zipf:
+    # Setup compression args
+    kwargs = {}
+    if compression_method == zipfile.ZIP_DEFLATED and compress_level is not None:
+        # compresslevel was added in Python 3.7
+        kwargs['compresslevel'] = compress_level
+        
+    with zipfile.ZipFile(output_filename, 'w', compression_method, **kwargs) as zipf:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {executor.submit(read_file, f): f for f in file_list}
             

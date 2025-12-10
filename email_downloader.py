@@ -146,7 +146,7 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
         return False, str(e)
 
 @click.command()
-@click.option('--email', prompt='Email address', help='Your email address')
+@click.option('--email', help='Your email address')
 @click.option('--password', help='Your email password (or App Password). If not provided, will prompt securely.')
 @click.option('--start-date', help='Start date (YYYY-MM-DD)', default=None)
 @click.option('--end-date', help='End date (YYYY-MM-DD)', default=None)
@@ -158,10 +158,84 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 @click.option('--server', help='IMAP server hostname (e.g. imap.gmail.com)')
 @click.option('--port', default=993, help='IMAP server port', type=int)
 @click.option('--nossl', is_flag=True, help='Disable SSL (use for servers that do not support SSL)')
-def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl):
+@click.option('--zip-only', help='Only zip and hash this directory (skip download)', default=None)
+@click.option('--compression-level', default=0, help='Compression level (0=Store/No Compression, 1-9=Deflate)', type=int)
+def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl, zip_only, compression_level):
     """
     Downloads emails from an IMAP server with auto-discovery and multi-threading.
     """
+    import zipfile
+    
+    # Determine compression settings
+    # Default is STORED (0)
+    if compression_level == 0:
+        compression_method = zipfile.ZIP_STORED
+        compress_lvl_arg = None
+    else:
+        compression_method = zipfile.ZIP_DEFLATED
+        compress_lvl_arg = compression_level
+
+    # --- ZIP ONLY MODE ---
+    if zip_only:
+        target_path = os.path.abspath(zip_only)
+        if not os.path.isdir(target_path):
+             # Try joining with output_dir if not absolute or existing
+             possible_path = os.path.join(output_dir, zip_only)
+             if os.path.isdir(possible_path):
+                 target_path = possible_path
+             else:
+                 click.echo(f"Error: Directory not found: {zip_only}")
+                 return
+
+        base_name = os.path.basename(target_path)
+        if not base_name: # Handle trailing slash
+             base_name = os.path.basename(os.path.dirname(target_path))
+             
+        # Output zip to the PARENT of the target folders, or just output_dir?
+        # Let's stick to output_dir to be safe, or just next to the folder if it's external.
+        # Use output_dir as destination for zip if provided, else parent of target.
+        if output_dir == 'downloaded_emails' and not os.path.exists('downloaded_emails'):
+             # If default output dir doesn't exist, maybe user didn't mean to use it.
+             # Saving next to folder.
+             dest_dir = os.path.dirname(target_path)
+        else:
+             dest_dir = output_dir
+             ensure_directory(dest_dir)
+
+        zip_filename = f"{base_name}.zip"
+        zip_path = os.path.join(dest_dir, zip_filename)
+        
+        click.echo(f"Zipping folder: {target_path}")
+        click.echo(f"Destination: {zip_path}")
+        if compression_level == 0:
+             click.echo("Compression: None (Store)")
+        else:
+             click.echo(f"Compression: Deflated (Level {compression_level})")
+        
+        create_zip_archive(target_path, zip_path, compression_method=compression_method, compress_level=compress_lvl_arg)
+        
+        click.echo("Calculating SHA1 hash...")
+        sha1_hash = calculate_sha1(zip_path)
+        file_size = os.path.getsize(zip_path)
+        
+        click.echo(f"SHA1 Hash: {sha1_hash}")
+        
+        # Save hash
+        checksum_file = os.path.join(dest_dir, f"{base_name}.txt")
+        with open(checksum_file, "w") as f:
+            f.write(f"File: {zip_filename}\n")
+            f.write(f"Size: {file_size} bytes\n")
+            f.write(f"SHA1: {sha1_hash}\n")
+            f.write(f"Date: {datetime.now().isoformat()}\n")
+            f.write("Mode: Zip Only\n")
+            
+        click.echo(f"Integrity info saved in {checksum_file}")
+        return
+
+    # Normal Mode requirements
+    if not email:
+        email = click.prompt('Email address')
+    
     use_ssl = not nossl
     if not password:
         password = getpass.getpass("Password (hidden): ")
@@ -614,7 +688,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             click.echo(f"Creating ZIP archive: {zip_path}...")
             
             # Zip the subfolder
-            create_zip_archive(final_subfolder_path, zip_path)
+            create_zip_archive(final_subfolder_path, zip_path, compression_method=compression_method, compress_level=compress_lvl_arg)
             
             click.echo("Calculating SHA1 hash...")
             sha1_hash = calculate_sha1(zip_path)

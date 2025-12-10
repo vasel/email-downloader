@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 *.zip
-*.txt
 downloaded_emails/
 temp_processing/
 .vscode/
@@ -12,3 +11,5 @@ benchmark_results.md
 benchmark_detailed.log
 benchmark_results/
 
+test_level_folder/file.txt
+test_zip_folder/test.txt
