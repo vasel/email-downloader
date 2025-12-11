@@ -36,6 +36,7 @@ def create_zip_archive(source_dir: str, output_filename: str, compression_method
 
     total_files = len(file_list)
     
+
     # 2. Define a worker to read file content
     def read_file(path_info):
         f_path, arc_name = path_info
@@ -46,26 +47,53 @@ def create_zip_archive(source_dir: str, output_filename: str, compression_method
         except Exception as e:
             return arc_name, None, e
 
-    # 3. Use ThreadPoolExecutor to read files in parallel
-    max_workers = os.cpu_count() 
+    # 3. Bounded Parallel Execution
+    # We use a thread pool but limit the number of active futures to prevent reading ALL files into RAM.
+    max_workers = min(32, (os.cpu_count() or 1) * 4)
+    file_iter = iter(file_list)
+    futures = set()
     
-    # Re-implementing with as_completed to avoid memory spike and allow streaming write
     # Setup compression args
     kwargs = {}
     if compression_method == zipfile.ZIP_DEFLATED and compress_level is not None:
-        # compresslevel was added in Python 3.7
         kwargs['compresslevel'] = compress_level
-        
+
     with zipfile.ZipFile(output_filename, 'w', compression_method, **kwargs) as zipf:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_file = {executor.submit(read_file, f): f for f in file_list}
             
-            for future in tqdm(concurrent.futures.as_completed(future_to_file), total=total_files, unit=' files', desc="Zipping"):
-                arcname, data, error = future.result()
-                if error:
-                    print(f"Error reading {arcname}: {error}")
-                else:
-                    zipf.writestr(arcname, data)
+            # Helper to submit tasks
+            def submit_tasks():
+                while len(futures) < max_workers * 2:
+                    try:
+                        file_info = next(file_iter)
+                        fut = executor.submit(read_file, file_info)
+                        futures.add(fut)
+                    except StopIteration:
+                        break
+
+            # Progress bar
+            pbar = tqdm(total=total_files, unit=' files', desc="Zipping")
+            
+            # Initial fill
+            submit_tasks()
+            
+            while futures:
+                # Wait for at least one future to complete
+                done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
+                
+                for future in done:
+                    futures.remove(future)
+                    arcname, data, error = future.result()
+                    if error:
+                        print(f"Error reading {arcname}: {error}")
+                    else:
+                        zipf.writestr(arcname, data)
+                    pbar.update(1)
+                
+                # Submit new tasks to keep the pool full
+                submit_tasks()
+            
+            pbar.close()
 
 def calculate_sha1(filename: str) -> str:
     """
