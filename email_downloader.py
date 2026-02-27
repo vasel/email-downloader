@@ -11,7 +11,7 @@ import msvcrt
 import sys
 import threading
 from imap_client import AutoIMAPClient
-from utils import ensure_directory, create_zip_archive, calculate_sha1, sanitize_filename
+from utils import ensure_directory, create_zip_archive, calculate_hashes, sanitize_filename
 
 def timed_input(prompt, timeout=10, default='y'):
     """
@@ -214,18 +214,22 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         
         create_zip_archive(target_path, zip_path, compression_method=compression_method, compress_level=compress_lvl_arg)
         
-        click.echo("Calculating SHA1 hash...")
-        sha1_hash = calculate_sha1(zip_path)
+        click.echo("Calculating hashes...")
+        hashes = calculate_hashes(zip_path)
         file_size = os.path.getsize(zip_path)
         
-        click.echo(f"SHA1 Hash: {sha1_hash}")
+        click.echo(f"SHA1 Hash: {hashes['sha1']}")
+        click.echo(f"SHA256 Hash: {hashes['sha256']}")
+        click.echo(f"BLAKE2b Hash: {hashes['blake2b']}")
         
         # Save hash
         checksum_file = os.path.join(dest_dir, f"{base_name}.txt")
         with open(checksum_file, "w") as f:
             f.write(f"File: {zip_filename}\n")
             f.write(f"Size: {file_size} bytes\n")
-            f.write(f"SHA1: {sha1_hash}\n")
+            f.write(f"SHA1: {hashes['sha1']}\n")
+            f.write(f"SHA256: {hashes['sha256']}\n")
+            f.write(f"BLAKE2b: {hashes['blake2b']}\n")
             f.write(f"Date: {datetime.now().isoformat()}\n")
             f.write("Mode: Zip Only\n")
             
@@ -690,18 +694,22 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             # Zip the subfolder
             create_zip_archive(final_subfolder_path, zip_path, compression_method=compression_method, compress_level=compress_lvl_arg)
             
-            click.echo("Calculating SHA1 hash...")
-            sha1_hash = calculate_sha1(zip_path)
+            click.echo("Calculating hashes...")
+            hashes = calculate_hashes(zip_path)
             file_size = os.path.getsize(zip_path)
             
-            click.echo(f"SHA1 Hash: {sha1_hash}")
+            click.echo(f"SHA1 Hash: {hashes['sha1']}")
+            click.echo(f"SHA256 Hash: {hashes['sha256']}")
+            click.echo(f"BLAKE2b Hash: {hashes['blake2b']}")
             
             # Save hash to file
             checksum_file = os.path.join(output_dir, f"{base_name}.txt")
             with open(checksum_file, "w") as f:
                 f.write(f"File: {zip_filename}\n")
                 f.write(f"Size: {file_size} bytes\n")
-                f.write(f"SHA1: {sha1_hash}\n")
+                f.write(f"SHA1: {hashes['sha1']}\n")
+                f.write(f"SHA256: {hashes['sha256']}\n")
+                f.write(f"BLAKE2b: {hashes['blake2b']}\n")
                 f.write(f"Date: {datetime.now().isoformat()}\n")
                 f.write(f"Status: {status}\n")
                 f.write(f"Total Emails: {total_items}\n")

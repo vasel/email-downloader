@@ -95,11 +95,13 @@ def create_zip_archive(source_dir: str, output_filename: str, compression_method
             
             pbar.close()
 
-def calculate_sha1(filename: str) -> str:
+def calculate_hashes(filename: str) -> dict:
     """
-    Calculates the SHA1 hash of a file using a producer-consumer model for read-ahead buffering.
+    Calculates the SHA1, SHA256, and BLAKE2b hashes of a file using a producer-consumer model for read-ahead buffering.
     """
     sha1 = hashlib.sha1()
+    sha256 = hashlib.sha256()
+    blake2b = hashlib.blake2b()
     file_size = os.path.getsize(filename)
     chunk_size = 1024 * 1024 * 4 # 4MB chunks
     
@@ -127,7 +129,13 @@ def calculate_sha1(filename: str) -> str:
             if data is None:
                 break
             sha1.update(data)
+            sha256.update(data)
+            blake2b.update(data)
             pbar.update(len(data))
             
     t.join()
-    return sha1.hexdigest()
+    return {
+        'sha1': sha1.hexdigest(),
+        'sha256': sha256.hexdigest(),
+        'blake2b': blake2b.hexdigest()
+    }
