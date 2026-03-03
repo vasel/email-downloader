@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path 'requirements.txt') { pip install -r requirements.txt }
+          pip install pyinstaller click tqdm
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          python update_version.py
+          python -m PyInstaller --onefile --name email_downloader --add-binary "./dist/api-ms-win-core-path-l1-1-0.dll;." --version-file=file_version_info.txt email_downloader.py
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $v = (Get-Content -Raw version.txt).Trim()
+          if (-not $v) { throw "version.txt is empty" }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Email Downloader v${{ steps.version.outputs.version }}
+          body: |
+            Automated release for version v${{ steps.version.outputs.version }}.
+          files: |
+            dist/email_downloader.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
