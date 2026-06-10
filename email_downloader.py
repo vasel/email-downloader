@@ -12,26 +12,45 @@ import sys
 import threading
 from imap_client import AutoIMAPClient
 from utils import ensure_directory, create_zip_archive, calculate_hashes, sanitize_filename
+from error_logger import ErrorLogger
+from interactive_menu import InteractiveMenu, DownloadSettings
 
 def timed_input(prompt, timeout=10, default='y'):
     """
-    Waits for input with a timeout (Windows only using msvcrt).
-    Returns the input character or default.
+    Waits for input with a visible countdown timer (Windows only using msvcrt).
+    Shows remaining seconds and the default value that will be used on timeout.
+    Returns the user's input character, or the default when time expires.
     """
-    sys.stdout.write(f"{prompt} ")
-    sys.stdout.flush()
-    
     start_time = time.time()
     input_char = ''
+    last_shown = -1
     
     while True:
+        remaining = max(0, int(timeout - (time.time() - start_time)))
+        
+        # Update countdown display only when the second changes
+        if remaining != last_shown:
+            sys.stdout.write(f"\r{prompt} (default: {default}) [{remaining}s] ")
+            sys.stdout.flush()
+            last_shown = remaining
+        
+        if remaining <= 0:
+            sys.stdout.write(f"-> {default}\n")
+            sys.stdout.flush()
+            return default
+        
         if msvcrt.kbhit():
             char = msvcrt.getwche()
-            if char == '\r' or char == '\n': # Enter pressed
-                print()
+            if char == '\r' or char == '\n':  # Enter pressed
+                sys.stdout.write("\n")
+                sys.stdout.flush()
                 return default if not input_char else input_char
             input_char += char
-            return input_char # Return immediately on first char for s/n
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            return input_char  # Return immediately on first char for y/n
+        
+        time.sleep(0.25)
             
 # Thread-local storage for IMAP connections
 thread_local = threading.local()
@@ -160,12 +179,67 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 @click.option('--nossl', is_flag=True, help='Disable SSL (use for servers that do not support SSL)')
 @click.option('--zip-only', help='Only zip and hash this directory (skip download)', default=None)
 @click.option('--compression-level', default=0, help='Compression level (0=Store/No Compression, 1-9=Deflate)', type=int)
-def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl, zip_only, compression_level):
+@click.option('--detect', help='Detect IMAP server for a domain or email (no login required). Example: --detect tresmarias.mg.gov.br', default=None)
+def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl, zip_only, compression_level, detect):
     """
     Downloads emails from an IMAP server with auto-discovery and multi-threading.
     """
     import zipfile
     
+    # --- DETECT ONLY MODE ---
+    if detect:
+        # Accept either a domain or an email address
+        if '@' in detect:
+            detect_email = detect
+        else:
+            detect_email = f"detect@{detect}"
+        
+        click.echo(f"\n{'='*60}")
+        click.echo(f"  IMAP Server Detection for: {detect}")
+        click.echo(f"{'='*60}\n")
+        
+        client = AutoIMAPClient(detect_email, "")
+        results = client.detect_server(verbose=True)
+        
+        click.echo(f"\n{'─'*60}")
+        
+        if results['security_gateway']:
+            click.echo(f"  ⚠ Email security gateway detected in MX records")
+        
+        if results['detected_provider']:
+            click.echo(f"  Provider: {results['detected_provider']}")
+        
+        if results['candidates']:
+            click.echo(f"\n  Recommended IMAP server: {results['candidates'][0]}")
+            click.echo(f"  Source: {results['sources'].get(results['candidates'][0], 'Unknown')}")
+            
+            if len(results['candidates']) > 1:
+                click.echo(f"\n  All candidates (in priority order):")
+                for i, candidate in enumerate(results['candidates'], 1):
+                    source = results['sources'].get(candidate, '')
+                    click.echo(f"    {i}. {candidate}  ({source})")
+        else:
+            click.echo("  Could not detect any IMAP server.")
+        
+        click.echo(f"{'─'*60}\n")
+        
+        # Show usage hint
+        if results['candidates']:
+            best = results['candidates'][0]
+            domain = results['domain']
+            click.echo(f"  Usage: py email_downloader.py --email user@{domain} --server {best}")
+            
+            # Show provider-specific notes
+            if results['detected_provider'] and 'Microsoft' in results['detected_provider']:
+                click.echo(f"\n  Note: Microsoft 365 may require an App Password or OAuth.")
+                click.echo(f"  IMAP must be enabled in the admin portal for this account.")
+            elif results['detected_provider'] and 'Google' in results['detected_provider']:
+                click.echo(f"\n  Note: Google Workspace requires an App Password.")
+                click.echo(f"  Visit: https://myaccount.google.com/apppasswords")
+        
+        click.echo()
+        return
+
     # Determine compression settings
     # Default is STORED (0)
     if compression_level == 0:
@@ -279,11 +353,14 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         
         click.echo("Error: Could not connect or auto-discover IMAP server.")
         
-        # UX Improvement: Gmail App Password (only show once or if relevant)
-        if 'gmail.com' in email.lower() or 'googlemail.com' in email.lower():
+        # UX Improvement: App Password alert for Gmail and Google Workspace domains
+        is_google = ('gmail.com' in email.lower() or 'googlemail.com' in email.lower() 
+                      or (client.detected_provider and 'Google' in client.detected_provider))
+        if is_google:
             click.echo("\n" + "="*60)
-            click.echo("GMAIL ALERT: Authentication failed.")
-            click.echo("To use this software with Gmail, you MUST use an 'App Password'.")
+            click.echo("GOOGLE ALERT: Authentication failed.")
+            click.echo("This domain uses Google Workspace (G Suite).")
+            click.echo("You MUST use an 'App Password' to connect via IMAP.")
             click.echo("Visit: https://myaccount.google.com/apppasswords")
             click.echo("Your normal Google password will NOT work.")
             click.echo("="*60 + "\n")
@@ -299,7 +376,8 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
     
     # Store the discovered server address to pass to threads
     server_address = client.server_address
-    click.echo(f"Identified server: {server_address}")
+    provider_info = f" ({client.detected_provider})" if client.detected_provider else ""
+    click.echo(f"Identified server: {server_address}{provider_info}")
 
     try:
         # List folders
@@ -332,6 +410,9 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         downloaded_count = 0
         skipped_count = 0
         failed_tasks = [] # List of (folder, email_id)
+        
+        # Download settings (can be changed via interactive menu)
+        settings = DownloadSettings(do_zip=False, max_retries=max_retries)
         status = "Completed"
         
         # Folder stats tracking: {folder_name: {'downloaded': 0, 'skipped': 0, 'failed': 0}}
@@ -390,17 +471,19 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                                 folder_stats[folder]['downloaded'] += 1
                     else:
                         failed_tasks.append((folder, eid))
+                        error_logger.log(folder, eid, error_msg or "Unknown error")
                         with folder_stats_lock:
                             if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
                             folder_stats[folder]['failed'] += 1
                     
                     pbar.update(1)
                     # REMOVED: update_speed() call to reduce I/O contention
-            except Exception:
+            except Exception as exc:
                 with count_lock:
                     if getattr(future, 'handled', False): return
                     future.handled = True
                     failed_tasks.append((folder, eid))
+                    error_logger.log(folder, eid, str(exc))
                     with folder_stats_lock:
                         if folder not in folder_stats: folder_stats[folder] = {'downloaded': 0, 'skipped': 0, 'failed': 0}
                         folder_stats[folder]['failed'] += 1
@@ -430,6 +513,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         
         click.echo(f"Saving emails to: {final_subfolder_path}")
         ensure_directory(final_subfolder_path)
+
+        # Initialize error logger and interactive menu
+        error_logger = ErrorLogger(final_subfolder_path)
+        menu = InteractiveMenu(settings, error_logger, shutdown_event)
 
         # Wrapper to track failures since callback doesn't have context easily
         def download_wrapper(em, pw, srv, f, eid, out, s_ids, s_lock, s_event, port, use_ssl):
@@ -488,21 +575,18 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                 for folder in other_folders:
                     if shutdown_event.is_set(): break
                     try:
-                        # Update status to show what we are scanning
-                        # We can't easily update pbar description from here without lock, 
-                        # so we use tqdm.write for log and maybe a shared status string
-                        tqdm.write(f"Scanning folder: {folder}...")
+                        # Update status using pbar description safely
+                        with count_lock:
+                            pbar.set_description(f"Scanning: {folder[:20]}")
                         
                         # Select folder
                         if not scan_client.select_folder(folder):
-                            tqdm.write(f"Skipping {folder}: Could not select.")
                             continue
                             
                         ids = scan_client.fetch_email_ids(folder, s_date, e_date)
                         
                         if ids:
                             count = len(ids)
-                            tqdm.write(f"-> Found {count} emails in {folder}")
                             
                             # Update total safely
                             with count_lock:
@@ -512,20 +596,19 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                             for eid in ids:
                                 if shutdown_event.is_set(): break
                                 submit_download(folder, eid)
-                        else:
-                            tqdm.write(f"-> No emails in {folder}")
                              
                     except Exception as e:
-                        tqdm.write(f"Error scanning {folder}: {e}")
+                        error_logger.log(folder, b"SCAN", str(e))
                 
                 scan_client.close()
-                tqdm.write("Background scan completed.")
+                with count_lock:
+                    pbar.set_description("Scan complete")
             
             scan_future = scan_executor.submit(background_scan)
             
             # 3. Interactive Wait Loop
             # Wait until scan is done AND all downloads are done
-            click.echo("\nPress ENTER to force progress update...")
+            click.echo("\nPress M or ESC for menu, ENTER for status update...")
             
             last_update_time = time.time()
             
@@ -540,10 +623,32 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                     if downloads_done:
                         break
                 
-                # Check for user input (Enter to update)
+                # Check if graceful stop was triggered via menu
+                if settings.should_stop:
+                    # Don't break immediately, wait for in-flight downloads
+                    if scan_done and all(f.done() for f in download_futures):
+                        break
+                
+                # Check for user input
                 if msvcrt.kbhit():
                     char = msvcrt.getwche()
-                    if char == '\r' or char == '\n':
+                    if char in ('m', 'M', '\x1b'):  # M key or ESC
+                        # Pause progress bar to avoid overwriting menu
+                        with count_lock:
+                            pbar.clear()
+                            pbar.disable = True
+                        
+                        # Show interactive menu
+                        menu.show()
+                        
+                        # Resume progress bar
+                        with count_lock:
+                            pbar.disable = False
+                            pbar.refresh()
+                            
+                        # After menu, re-display the hint
+                        tqdm.write("Press M or ESC for menu, ENTER for status update...")
+                    elif char == '\r' or char == '\n':
                         # Force update
                         with count_lock:
                             pbar.refresh()
@@ -580,7 +685,8 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             download_executor.shutdown(wait=False)
             
         # Retry Logic
-        # Retry Logic
+        # Use settings.max_retries which may have been updated via menu
+        effective_max_retries = settings.max_retries
         retry_attempt = 0
         
         while failed_tasks and status == "Completed":
@@ -590,8 +696,8 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             should_retry = False
             timeout_val = 60 # Base timeout
             
-            if retry_attempt < max_retries:
-                click.echo(f"Auto-retry attempt {retry_attempt + 1}/{max_retries}...")
+            if retry_attempt < effective_max_retries:
+                click.echo(f"Auto-retry attempt {retry_attempt + 1}/{effective_max_retries}...")
                 should_retry = True
                 # Exponential backoff for timeout (60, 120, 180...)
                 timeout_val = 60 * (retry_attempt + 1)
@@ -602,14 +708,11 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                     choice = 'n'
                 else:
                     # If we exhausted auto-retries, default is 'n', else 'y'
-                    default_choice = 'n' if max_retries > 0 else 'y'
-                    choice = timed_input(f"Do you want to retry downloading the {len(failed_tasks)} errors? (y/n) [10s]:", timeout=10, default=default_choice)
+                    default_choice = 'n' if effective_max_retries > 0 else 'y'
+                    choice = timed_input(f"Retry downloading {len(failed_tasks)} errors? (y/n)", timeout=10, default=default_choice)
                 
                 if choice.lower() == 'y':
                     should_retry = True
-                    # Reset attempt count if user manually says yes, to allow further manual retries? 
-                    # Or just keep increasing timeout? Let's keep increasing timeout but cap it maybe?
-                    # For simplicity, let's just use base timeout or current level.
                     timeout_val = 60 * (retry_attempt + 1)
                 else:
                     should_retry = False
@@ -629,8 +732,10 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                         success, error_msg, _, _ = future.result()
                         if not success:
                              new_failed.append((folder, eid))
-                    except:
+                             error_logger.log(folder, eid, error_msg or "Retry failed")
+                    except Exception as exc:
                         new_failed.append((folder, eid))
+                        error_logger.log(folder, eid, f"Retry exception: {exc}")
                     pbar_retry.update(1)
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
@@ -655,9 +760,6 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
                 
                 # Update total downloaded count
                 downloaded_count += recovered
-                
-                # If manual retry was triggered and we are here, loop continues.
-                # If auto-retry was triggered, loop continues.
             else:
                 break
 
@@ -678,12 +780,16 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         click.echo(f"Average Speed: {emails_per_hour:.2f} emails/hour")
         click.echo(f"Emails saved in: {os.path.abspath(output_dir)}")
         
-        # Zip and Hash section with Timeout
+        # Zip and Hash section
+        # If ZIP was configured via interactive menu, use that setting directly
         click.echo("\n")
-        if batch:
+        if settings.zip_configured:
+            user_choice = 'y' if settings.do_zip else 'n'
+            click.echo(f"ZIP creation (set via menu): {'Yes' if settings.do_zip else 'No'}")
+        elif batch:
             user_choice = 'n'
         else:
-            user_choice = timed_input("Do you want to create a ZIP archive of the downloaded emails? (y/n) [10s]:", timeout=10, default='y')
+            user_choice = timed_input("Create ZIP archive of downloaded emails? (y/n)", timeout=10, default='y')
         
         if user_choice.lower() == 'y':
             zip_filename = f"{base_name}.zip"

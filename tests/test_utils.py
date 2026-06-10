@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from utils import sanitize_filename, ensure_directory, calculate_sha1, create_zip_archive
+from utils import sanitize_filename, ensure_directory, calculate_hashes, create_zip_archive
 
 class TestUtils(unittest.TestCase):
 
@@ -32,16 +32,23 @@ class TestUtils(unittest.TestCase):
         # Ensure calling it again doesn't raise error
         ensure_directory(new_dir)
 
-    def test_calculate_sha1(self):
+    def test_calculate_hashes(self):
         file_path = os.path.join(self.test_dir, "test_file.txt")
         content = b"test content"
         with open(file_path, "wb") as f:
             f.write(content)
         
+        hashes = calculate_hashes(file_path)
+        
+        # Verify all three hash types are returned
+        self.assertIn('sha1', hashes)
+        self.assertIn('sha256', hashes)
+        self.assertIn('blake2b', hashes)
+        
         # SHA1 of "test content"
         # echo -n "test content" | sha1sum -> 1eebdf4fdc9fc7bf283031b93f9aef3338de9052
         expected_sha1 = "1eebdf4fdc9fc7bf283031b93f9aef3338de9052"
-        self.assertEqual(calculate_sha1(file_path), expected_sha1)
+        self.assertEqual(hashes['sha1'], expected_sha1)
 
     def test_create_zip_archive(self):
         src_dir = os.path.join(self.test_dir, "src")

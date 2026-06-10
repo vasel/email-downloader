@@ -10,8 +10,16 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import specific functions to test
 # Note: Testing the main loop is hard, so we focus on helper functions and worker tasks
 from email_downloader import download_email_task
+import email_downloader
 
 class TestEmailDownloader(unittest.TestCase):
+
+    def setUp(self):
+        # Clear thread-local storage to ensure test isolation.
+        # Without this, thread_local.client from a previous test leaks into the next one,
+        # causing it to skip AutoIMAPClient() creation and reuse a stale mock.
+        if hasattr(email_downloader.thread_local, 'client'):
+            del email_downloader.thread_local.client
 
     @patch('email_downloader.AutoIMAPClient')
     @patch('email_downloader.ensure_directory')
