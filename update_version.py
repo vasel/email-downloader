@@ -9,8 +9,9 @@ def get_next_version():
         version_str = f.read().strip()
         parts = list(map(int, version_str.split('.')))
         
-        # Increment patch
-        parts[2] += 1
+        # Increment minor
+        parts[1] += 1
+        parts[2] = 0
         return parts
 
 def write_version(parts):
