@@ -56,6 +56,8 @@ python email_downloader.py --email your_email@gmail.com --output-dir ./downloads
 *   `--server`: IMAP server hostname (e.g., imap.gmail.com).
 *   `--port`: IMAP server port (default: 993).
 *   `--nossl`: Disable SSL (use for servers that do not support SSL).
+*   `--update`: Check for updates and download the latest version from GitHub.
+*   `--version`: Show the current version and exit.
 
 ### Examples
 

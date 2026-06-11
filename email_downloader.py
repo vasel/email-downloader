@@ -10,10 +10,159 @@ import time
 import msvcrt
 import sys
 import threading
+import json
+import urllib.request
+import urllib.error
 from imap_client import AutoIMAPClient
 from utils import ensure_directory, create_zip_archive, calculate_hashes, sanitize_filename
 from error_logger import ErrorLogger
 from interactive_menu import InteractiveMenu, DownloadSettings
+
+GITHUB_REPO = "vasel/email-downloader"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_EXE_NAME = "email_downloader.exe"
+
+def get_current_version():
+    """Reads the current version from version.txt (bundled or local)."""
+    # When running as PyInstaller exe, version.txt is next to the exe
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    version_file = os.path.join(base_path, 'version.txt')
+    try:
+        with open(version_file, 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return "unknown"
+
+def parse_version(version_str):
+    """Parses a version string like '1.2.3' into a tuple of ints for comparison."""
+    try:
+        return tuple(int(x) for x in version_str.strip().lstrip('v').split('.'))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+def check_for_update():
+    """
+    Checks GitHub releases API for a newer version.
+    If found, offers to download and replace the current executable.
+    """
+    current_version = get_current_version()
+    click.echo(f"Versão atual: {current_version}")
+    click.echo(f"Verificando atualizações no GitHub...")
+    
+    try:
+        req = urllib.request.Request(GITHUB_API_LATEST, headers={'User-Agent': 'email-downloader-updater'})
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            click.echo("Nenhuma release encontrada no repositório.")
+        else:
+            click.echo(f"Erro ao verificar atualizações: HTTP {e.code}")
+        return
+    except (urllib.error.URLError, OSError) as e:
+        click.echo(f"Erro de conexão ao verificar atualizações: {e}")
+        return
+    except json.JSONDecodeError:
+        click.echo("Erro ao interpretar resposta do GitHub.")
+        return
+    
+    latest_tag = data.get('tag_name', '')
+    latest_version = parse_version(latest_tag)
+    current_parsed = parse_version(current_version)
+    
+    if latest_version <= current_parsed:
+        click.echo(f"Você já está na versão mais recente ({current_version}).")
+        return
+    
+    release_name = data.get('name', latest_tag)
+    release_notes = data.get('body', '')
+    
+    click.echo(f"\n{'='*60}")
+    click.echo(f"  Nova versão disponível: {latest_tag}")
+    if release_name and release_name != latest_tag:
+        click.echo(f"  Release: {release_name}")
+    click.echo(f"{'='*60}")
+    
+    if release_notes:
+        click.echo(f"\nNotas da versão:")
+        click.echo(release_notes[:500])
+        if len(release_notes) > 500:
+            click.echo("...")
+    
+    # Find the .exe asset in the release
+    download_url = None
+    asset_size = 0
+    for asset in data.get('assets', []):
+        if asset.get('name', '').lower() == GITHUB_EXE_NAME:
+            download_url = asset.get('browser_download_url')
+            asset_size = asset.get('size', 0)
+            break
+    
+    if not download_url:
+        click.echo(f"\nExecutável não encontrado nos assets da release.")
+        click.echo(f"Baixe manualmente em: https://github.com/{GITHUB_REPO}/releases/latest")
+        return
+    
+    # Only auto-download when running as a compiled exe
+    if not getattr(sys, 'frozen', False):
+        click.echo(f"\nVocê está executando via Python (não como .exe compilado).")
+        click.echo(f"Atualize manualmente com: git pull")
+        click.echo(f"Ou baixe o .exe em: {download_url}")
+        return
+    
+    size_mb = asset_size / (1024 * 1024) if asset_size else 0
+    click.echo(f"\nTamanho do download: {size_mb:.1f} MB")
+    
+    choice = click.prompt("Deseja baixar e atualizar agora? (s/n)", default='s')
+    if choice.lower() not in ('s', 'y', 'sim', 'yes'):
+        click.echo("Atualização cancelada.")
+        return
+    
+    # Download the new exe
+    exe_path = sys.executable
+    backup_path = exe_path + '.bak'
+    temp_path = exe_path + '.new'
+    
+    click.echo(f"Baixando {GITHUB_EXE_NAME}...")
+    try:
+        req = urllib.request.Request(download_url, headers={'User-Agent': 'email-downloader-updater'})
+        with urllib.request.urlopen(req, timeout=120) as response:
+            total_size = int(response.headers.get('Content-Length', 0))
+            downloaded = 0
+            with open(temp_path, 'wb') as f:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        pct = (downloaded / total_size) * 100
+                        sys.stdout.write(f"\rProgresso: {pct:.1f}% ({downloaded // 1024} KB)")
+                        sys.stdout.flush()
+        
+        click.echo("\nDownload concluído.")
+        
+        # Replace: current -> backup, new -> current
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+        os.rename(exe_path, backup_path)
+        os.rename(temp_path, exe_path)
+        
+        click.echo(f"Atualização concluída! Versão {latest_tag} instalada.")
+        click.echo(f"Backup da versão anterior salvo em: {backup_path}")
+        click.echo(f"Reinicie o programa para usar a nova versão.")
+        
+    except Exception as e:
+        click.echo(f"\nErro durante o download: {e}")
+        # Cleanup
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        click.echo("Atualização falhou. O programa atual não foi alterado.")
 
 def timed_input(prompt, timeout=10, default='y'):
     """
@@ -165,6 +314,7 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
         return False, str(e)
 
 @click.command()
+@click.version_option(version=get_current_version(), prog_name='Email Downloader')
 @click.option('--email', help='Your email address')
 @click.option('--password', help='Your email password (or App Password). If not provided, will prompt securely.')
 @click.option('--start-date', help='Start date (YYYY-MM-DD)', default=None)
@@ -180,11 +330,17 @@ def download_email_task(email, password, server_address, folder, email_id, outpu
 @click.option('--zip-only', help='Only zip and hash this directory (skip download)', default=None)
 @click.option('--compression-level', default=0, help='Compression level (0=Store/No Compression, 1-9=Deflate)', type=int)
 @click.option('--detect', help='Detect IMAP server for a domain or email (no login required). Example: --detect tresmarias.mg.gov.br', default=None)
-def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl, zip_only, compression_level, detect):
+@click.option('--update', is_flag=True, help='Check for updates and download the latest version')
+def main(email, password, start_date, end_date, days, output_dir, threads, max_retries, batch, server, port, nossl, zip_only, compression_level, detect, update):
     """
     Downloads emails from an IMAP server with auto-discovery and multi-threading.
     """
     import zipfile
+    
+    # --- UPDATE MODE ---
+    if update:
+        check_for_update()
+        return
     
     # --- DETECT ONLY MODE ---
     if detect:
