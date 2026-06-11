@@ -13,6 +13,7 @@ import threading
 import json
 import urllib.request
 import urllib.error
+import ssl
 from imap_client import AutoIMAPClient
 from utils import ensure_directory, create_zip_archive, calculate_hashes, sanitize_filename
 from error_logger import ErrorLogger
@@ -23,19 +24,65 @@ GITHUB_API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest
 GITHUB_EXE_NAME = "email_downloader.exe"
 
 def get_current_version():
-    """Reads the current version from version.txt (bundled or local)."""
-    # When running as PyInstaller exe, version.txt is next to the exe
+    """
+    Reads the current version from the executable's Windows version resource.
+    Falls back to version.txt when running as a Python script (dev mode).
+    """
     if getattr(sys, 'frozen', False):
-        base_path = os.path.dirname(sys.executable)
+        # Running as compiled exe: read version from the binary's resource
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            exe_path = sys.executable
+            version_dll = ctypes.windll.version
+            
+            size = version_dll.GetFileVersionInfoSizeW(exe_path, None)
+            if size == 0:
+                return "unknown"
+            
+            data = ctypes.create_string_buffer(size)
+            if not version_dll.GetFileVersionInfoW(exe_path, 0, size, data):
+                return "unknown"
+            
+            buf = ctypes.c_void_p()
+            length = wintypes.UINT()
+            if not version_dll.VerQueryValueW(data, '\\\\', ctypes.byref(buf), ctypes.byref(length)):
+                return "unknown"
+            
+            class VS_FIXEDFILEINFO(ctypes.Structure):
+                _fields_ = [
+                    ('dwSignature', wintypes.DWORD),
+                    ('dwStrucVersion', wintypes.DWORD),
+                    ('dwFileVersionMS', wintypes.DWORD),
+                    ('dwFileVersionLS', wintypes.DWORD),
+                    ('dwProductVersionMS', wintypes.DWORD),
+                    ('dwProductVersionLS', wintypes.DWORD),
+                    ('dwFileFlagsMask', wintypes.DWORD),
+                    ('dwFileFlags', wintypes.DWORD),
+                    ('dwFileOS', wintypes.DWORD),
+                    ('dwFileType', wintypes.DWORD),
+                    ('dwFileSubtype', wintypes.DWORD),
+                    ('dwFileDateMS', wintypes.DWORD),
+                    ('dwFileDateLS', wintypes.DWORD),
+                ]
+            
+            info = ctypes.cast(buf, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+            major = info.dwFileVersionMS >> 16
+            minor = info.dwFileVersionMS & 0xFFFF
+            patch = info.dwFileVersionLS >> 16
+            return f"{major}.{minor}.{patch}"
+        except Exception:
+            return "unknown"
     else:
+        # Dev mode: read from version.txt
         base_path = os.path.dirname(os.path.abspath(__file__))
-    
-    version_file = os.path.join(base_path, 'version.txt')
-    try:
-        with open(version_file, 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return "unknown"
+        version_file = os.path.join(base_path, 'version.txt')
+        try:
+            with open(version_file, 'r') as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return "unknown"
 
 def parse_version(version_str):
     """Parses a version string like '1.2.3' into a tuple of ints for comparison."""
@@ -122,47 +169,67 @@ def check_for_update():
         click.echo("Atualização cancelada.")
         return
     
-    # Download the new exe
+    # Download the new exe with retry logic
     exe_path = sys.executable
     backup_path = exe_path + '.bak'
     temp_path = exe_path + '.new'
     
-    click.echo(f"Baixando {GITHUB_EXE_NAME}...")
-    try:
-        req = urllib.request.Request(download_url, headers={'User-Agent': 'email-downloader-updater'})
-        with urllib.request.urlopen(req, timeout=120) as response:
-            total_size = int(response.headers.get('Content-Length', 0))
-            downloaded = 0
-            with open(temp_path, 'wb') as f:
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        pct = (downloaded / total_size) * 100
-                        sys.stdout.write(f"\rProgresso: {pct:.1f}% ({downloaded // 1024} KB)")
-                        sys.stdout.flush()
-        
-        click.echo("\nDownload concluído.")
-        
-        # Replace: current -> backup, new -> current
-        if os.path.exists(backup_path):
-            os.remove(backup_path)
-        os.rename(exe_path, backup_path)
-        os.rename(temp_path, exe_path)
-        
-        click.echo(f"Atualização concluída! Versão {latest_tag} instalada.")
-        click.echo(f"Backup da versão anterior salvo em: {backup_path}")
-        click.echo(f"Reinicie o programa para usar a nova versão.")
-        
-    except Exception as e:
-        click.echo(f"\nErro durante o download: {e}")
-        # Cleanup
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        click.echo("Atualização falhou. O programa atual não foi alterado.")
+    max_download_retries = 3
+    ssl_context = ssl.create_default_context()
+    
+    for attempt in range(1, max_download_retries + 1):
+        click.echo(f"Baixando {GITHUB_EXE_NAME}... (tentativa {attempt}/{max_download_retries})")
+        try:
+            req = urllib.request.Request(download_url, headers={
+                'User-Agent': 'email-downloader-updater',
+                'Accept': 'application/octet-stream',
+            })
+            with urllib.request.urlopen(req, timeout=300, context=ssl_context) as response:
+                total_size = int(response.headers.get('Content-Length', 0))
+                downloaded = 0
+                with open(temp_path, 'wb') as f:
+                    while True:
+                        chunk = response.read(65536)  # 64KB chunks
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            pct = (downloaded / total_size) * 100
+                            sys.stdout.write(f"\rProgresso: {pct:.1f}% ({downloaded // 1024} KB / {total_size // 1024} KB)")
+                            sys.stdout.flush()
+            
+            # Verify download size matches expected
+            if total_size > 0 and downloaded != total_size:
+                raise IOError(f"Download incompleto: {downloaded}/{total_size} bytes")
+            
+            click.echo("\nDownload concluído.")
+            
+            # Replace: current -> backup, new -> current
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            os.rename(exe_path, backup_path)
+            os.rename(temp_path, exe_path)
+            
+            click.echo(f"Atualização concluída! Versão {latest_tag} instalada.")
+            click.echo(f"Backup da versão anterior salvo em: {backup_path}")
+            click.echo(f"Reinicie o programa para usar a nova versão.")
+            return  # Success
+            
+        except Exception as e:
+            click.echo(f"\nErro na tentativa {attempt}: {e}")
+            # Cleanup temp file
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            
+            if attempt < max_download_retries:
+                wait_time = attempt * 3
+                click.echo(f"Aguardando {wait_time}s antes de tentar novamente...")
+                time.sleep(wait_time)
+            else:
+                click.echo(f"Todas as {max_download_retries} tentativas falharam.")
+                click.echo(f"Baixe manualmente em: {download_url}")
+                click.echo("O programa atual não foi alterado.")
 
 def timed_input(prompt, timeout=10, default='y'):
     """
