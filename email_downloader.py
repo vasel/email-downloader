@@ -522,6 +522,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
         # Save hash
         checksum_file = os.path.join(dest_dir, f"{base_name}.txt")
         with open(checksum_file, "w") as f:
+            f.write(f"Email Downloader v{get_current_version()}\n")
             f.write(f"File: {zip_filename}\n")
             f.write(f"Size: {file_size} bytes\n")
             f.write(f"SHA1: {hashes['sha1']}\n")
@@ -1034,6 +1035,7 @@ def main(email, password, start_date, end_date, days, output_dir, threads, max_r
             # Save hash to file
             checksum_file = os.path.join(output_dir, f"{base_name}.txt")
             with open(checksum_file, "w") as f:
+                f.write(f"Email Downloader v{get_current_version()}\n")
                 f.write(f"File: {zip_filename}\n")
                 f.write(f"Size: {file_size} bytes\n")
                 f.write(f"SHA1: {hashes['sha1']}\n")
